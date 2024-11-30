@@ -5,6 +5,7 @@ Python application for bulk testing and erasing of storage devices.
 python-pysimplegui
 python-humanize
 smartmontools
+jq
 
 ## Instructions
 ### Installation
