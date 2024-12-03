@@ -8,7 +8,7 @@
 # jq smartmontools findutils util-linux-libs grep python-pysimplegui python-humanize
 # 
 # Required packages:
-# pacman -Syu jq smartmontools grep python-humanize
+# pacman -Syu jq smartmontools grep python-humanize python-paramiko
 # yay -S python-pysimplegui
 # 
 # to run this script as not super user:
@@ -27,6 +27,7 @@ import signal
 import humanize
 import time
 import threading
+import argparse
 
 smart_data_dict= dict()
 all_drives=dict()
@@ -40,40 +41,79 @@ QUIT=False
 def get_serials_from_drive_paths(drive_paths):
     drives=dict()
     for i in drive_paths:
-        block=i.split('/')[-1]
         #faster method but doesn't work with all drive types
         try:
-            myfile=open(f'/sys/block/{block}/device/serial','r')
-            serial=myfile.readline().rstrip()
-            myfile.close()
+            block=i.split('/')[-1]
+            serial=subprocess.check_output(['cat',f'/sys/block/{block}/device/serial']).rstrip().decode("utf-8")
+        except subprocess.CalledProcessError as e:
+            print(f'Unable to get serial for device {i} from virtual filesystem. Proceeding with smartctl method.')
+        else:
             drives[serial]=i
-        #fall back to reading smart data
-        except:
-            serial=os.popen("smartctl -aj "+i+"|jq -r '{serial_number}.[]'").read().rstrip()
+            continue
+        #fall back to reading json data
+        try:
+            data=json.loads(get_smart(i))
+            serial=data.get('serial_number')
             #do not add drive if we can't get a serial
-            if serial != 'null':
-                drives[serial]=i
+            if serial is None:
+                raise TypeError
+        except TypeError as e:
+            print(f'Unable to get serial for device {i} from smartctl. Not populating.')
+        else:
+            #print(f'Found serial {serial} for drive {i} through smartctl.')
+            drives[serial]=i
     return drives
 
 #returns list of mounted drives as a dict "{serial}"->"{path}"
 def get_mounted_drives():
-    drive_paths=os.popen(r"mount|grep --only-matching -e '^/dev/nvme[0-9]n[0-9]\|^/dev/sd[a-z]'").read().splitlines()
+    try:
+        mount=subprocess.Popen(['mount'],stdout=subprocess.PIPE)
+        grep=subprocess.Popen(['grep','--only-matching','-e',r'^/dev/nvme[0-9]n[0-9]\|^/dev/sd[a-z]'],stdin=mount.stdout,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        mount.stdout.close()
+        output,err=grep.communicate()
+        drive_paths=output.decode("utf-8").splitlines()
+    except subprocess.CalledProcessError as e:
+        print('Subprocess for get_mounted_drives() failed:')
+        print(e)
+        pass
     return get_serials_from_drive_paths(drive_paths)
 
 #returns list of connected drives as a dict "{serial}"->"{path}"
 def get_drives():
-    drive_paths=os.popen(r"find /dev -type b -regex '/dev/sd[a-x]+\|/dev/nvme[0-9]n[0-9]'").read().splitlines()
+    try:
+        drive_paths=''
+        output=subprocess.check_output(['find','/dev','-type','b','-regex',r'/dev/sd[a-x]+\|/dev/nvme[0-9]n[0-9]']).decode('utf-8').splitlines()
+    except subprocess.CalledProcessError as e:
+        print('Subprocess for get_drives() failed:')
+        print(e)
+    else:
+        drive_paths=output
     return get_serials_from_drive_paths(drive_paths)
+
 
 #retrieve smart data as JSON
 def get_smart(drive_path):
-    if drive_path != None:
-        return os.popen(r"smartctl -aj " + drive_path).read()
+    try:
+        output=subprocess.run(['smartctl','-aj',drive_path],stdout=subprocess.PIPE)
+        data=output.stdout
+        #check if bit 1 or 2 of the return code is set (command line did not parse or drive not found)
+        if output.returncode & 3 :
+            raise Exception()
+    #too tired to do this properly
+    except Exception as e:
+        print(f'Subprocess for get_smart({drive_path}) failed:')
+        print(e)
+    else:
+        return output.stdout
 
 #display popup with smartctl printout
 def popup_smart_data(drive_path):
-    if drive_path != None:
-        sg.popup_scrolled(os.popen(r"smartctl -a " + drive_path).read(),title=drive_path,font="Monospace 8")
+    try:
+        output=subprocess.run(['smartctl','-a',drive_path],stdout=subprocess.PIPE)
+    except:
+        pass
+    else:
+        sg.popup_scrolled(output.stdout.decode('utf-8'),title=drive_path,font="Monospace 8")
 
 #initiate drive erasure; method dependent on drive type
 #returns handle to subprocess, which we can poll later to check for exit code to know when it's done
@@ -88,8 +128,12 @@ def erase_drive(drive_path,device_type):
 
 #display popup with hexdump printout of first few LBA of drive
 def hexdump(drive_path):
-    if drive_path != None:
-        sg.popup_scrolled(os.popen(r"hexdump -C -n17408 " + drive_path).read(),title=f'{drive_path} LBA Check',font="Monospace 8")
+    try:
+        output=subprocess.run(['hexdump','-C','-n17408',drive_path],stdout=subprocess.PIPE)
+    except:
+        pass
+    else:
+        sg.popup_scrolled(output.stdout.decode('utf-8'),title=f'{drive_path} LBA Check',font="Monospace 8")
 
 #callback functions for marking drives as tested after timer subprocess completion
 def mark_short_tested(serial):
