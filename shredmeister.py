@@ -53,7 +53,7 @@ def get_serials_from_drive_paths(drive_paths):
         #fall back to reading json data
         try:
             data=json.loads(get_smart(i))
-            serial=data.get('serial_number')
+            serial=data['serial_number']
             #do not add drive if we can't get a serial
             if serial is None:
                 raise TypeError
@@ -206,11 +206,10 @@ def refresh(serial,use_stale_data=False):
             data=smart_data_dict[serial]
         else:
             data=smart_data_dict[serial]=json.loads(get_smart(all_drives[serial].path))
-        device_model=data.get("model_name")
-        device_protocol=data.get("device", {}).get("protocol")
-        drive_bytes=data.get("user_capacity",{}).get("bytes")
+        device_model=data['model_name']
+        device_protocol=data['device']['protocol']
+        drive_bytes=data['user_capacity']['bytes']
         drive_capacity=humanize.naturalsize(int( 0 if drive_bytes is None else drive_bytes))
-        rpm=data.get("rotation_rate")
         table_data,new_row_colors=make_table_data(serial,data)
         erasing=is_in_sublist(serial,subproc_list)
         erased="..." if erasing else "✔" if all_drives[serial].erased else "❌"
@@ -226,6 +225,7 @@ def refresh(serial,use_stale_data=False):
             window[f'-Short-'].update(disabled=True)
             window[f'-Long-'].update(disabled=True)
         else:
+            rpm=data['rotation_rate']
             window[f'{serial} model'].update(value=f'{device_model} {device_protocol} {drive_capacity} {rpm} RPM')
             window[f'-Short-'].update(disabled=False)
             window[f'-Long-'].update(disabled=False)
@@ -235,72 +235,111 @@ def refresh(serial,use_stale_data=False):
 
 #populate data table for specified drive, given its smart data
 def make_table_data(drive,data):
-    smart_passed=data.get("smart_status", {}).get("passed")
-    device_protocol=data.get("device", {}).get("protocol")
-    my_row_colors = []
-    if(device_protocol == 'NVMe'):
-        table_data=[
-            ["Available Spare", data.get("nvme_smart_health_information_log", {}).get("available_spare") ],
-            ["Power Cycles", data.get("nvme_smart_health_information_log", {}).get("power_cycles") ],
-            ["Hours", data.get("nvme_smart_health_information_log", {}).get("power_on_hours") ],
-            ["Unsafe Shutdowns", data.get("nvme_smart_health_information_log", {}).get("unsafe_shutdowns") ],
-            ["Data Read", data.get("nvme_smart_health_information_log", {}).get("data_units_read") ],
-            ["Data Written", data.get("nvme_smart_health_information_log", {}).get("data_units_written") ],
-            ["Media Errors", data.get("nvme_smart_health_information_log", {}).get("media_errors") ]
-        ]
-        if(table_data[0][1]<80):
-            my_row_colors.append([0,"black","yellow"])
-        elif(table_data[0][1]<50):
-            my_row_colors.append([0,"black","red"])
+    try:
+        smart_passed=''
+        try:
+            smart_passed=data['smart_status']['passed']
+        except KeyError as e:
+            smart_passed='n/a'
+        device_protocol=data['device']['protocol']
+        my_row_colors = []
+        if(device_protocol == 'NVMe'):
+            table_data=[
+                ["SMART Passed", smart_passed ],
+                ["Available Spare", data['nvme_smart_health_information_log']['available_spare'] ],
+                ["Power Cycles", data['nvme_smart_health_information_log']['power_cycles'] ],
+                ["Hours", humanize.naturalsize(data['nvme_smart_health_information_log']['power_on_hours'])[:-1]+' hours' ],
+                ["Unsafe Shutdowns", data['nvme_smart_health_information_log']['unsafe_shutdowns'] ],
+                ["Data Read", humanize.naturalsize(data['nvme_smart_health_information_log']['data_units_read']*512000)],
+                ["Data Written", humanize.naturalsize(data['nvme_smart_health_information_log']['data_units_written']*512000) ],
+                ["Media Errors", data['nvme_smart_health_information_log']['media_errors'] ]
+            ]
+            
+            if(table_data[0][1]==True):
+                my_row_colors.append([0,"black","green"])
+            else:
+                my_row_colors.append([0,"black","red"])
+            
+            if(table_data[1][1]<80):
+                my_row_colors.append([1,"black","yellow"])
+            elif(table_data[1][1]<50):
+                my_row_colors.append([1,"black","red"])
+            else:
+                my_row_colors.append([1,"black","green"])
         else:
-            my_row_colors.append([0,"black","green"])
-    else:
-        table_data=[
-            ["Smart Passed", data.get("ata_smart_data",{}).get("self_test", {}).get("status",{}).get("passed") ],
-            ["Smart Status", data.get("ata_smart_data",{}).get("self_test", {}).get("status",{}).get("string") ],
-            ["Power On Time", data.get("power_on_time") ],
-            ["Power Cycle Count", data.get("power_cycle_count") ],
-        ]
-        #set the colour of certain rows depending on value, to highlight good and bad attributes
-        if(table_data[0][1]==True):
-            my_row_colors.append([0,"black","green"])
-        else:
-            my_row_colors.append([0,"black","red"]) 
-        for tup in data.get("ata_smart_attributes",{}).get("table") or []:
-            if(tup.get("id",{}) == 5):
-                val=tup.get("raw",{}).get("value")
-                table_data.append(["RAS",val])
-                index=len(table_data)-1
-                if(val>0):
-                    my_row_colors.append([index,"black","red"])
+            power_on_hours=None
+            try:
+                my_hours=data['power_on_time']['hours']
+            except KeyError as e:
+                try:
+                    my_hours=data['power_on_time']['seconds']
+                except KeyError as e:
+                    pass
                 else:
-                    my_row_colors.append([index,"black","green"])
-            elif(tup.get("id",{}) == 197):
-                val=tup.get("raw",{}).get("value")
-                table_data.append(["Pending",val])
-                index=len(table_data)-1
-                if(val>0):
-                    my_row_colors.append([index,"black","red"])
-                else:
-                    my_row_colors.append([index,"black","green"])
-            elif(tup.get("id",{}) == 191):
-                val=tup.get("raw",{}).get("value")
-                table_data.append(["GSENSE",val])
-                index=len(table_data)-1
-                if(val>0):
-                    my_row_colors.append([index,"black","red"])
-                else:
-                    my_row_colors.append([index,"black","green"])
-            elif(tup.get("id",{}) == 191):
-                val=tup.get("raw",{}).get("value")
-                table_data.append(["GSENSE",val])
-                index=len(table_data)-1
-                if(val>0):
-                    my_row_colors.append([index,"black","red"])
-                else:
-                    my_row_colors.append([index,"black","green"])
-    return table_data,my_row_colors
+                    power_on_hours=int(my_hours/3600)
+            else:
+                power_on_hours=int(my_hours)
 
+            ata_smart_passed=None
+            try:
+                ata_smart_passed=data['ata_smart_data']['self_test']['status']['passed']
+            except KeyError as e:
+                ata_smart_passed='N/A'
+
+            table_data=[
+                ["Smart Passed", ata_smart_passed ],
+                ["Smart Status", data['ata_smart_data']['self_test']['status']['string'] ],
+                ["Power On Time", humanize.naturalsize(power_on_hours)[:-1]+' hours' ],
+                ["Power Cycle Count", data['power_cycle_count'] ],
+            ]
+            #set the colour of certain rows depending on value, to highlight good and bad attributes
+            if(table_data[0][1]==True):
+                my_row_colors.append([0,"black","green"])
+            else:
+                my_row_colors.append([0,"black","red"])
+            
+            for row in data['ata_smart_attributes']['table']:
+                match(row['id']):
+                    case 5:
+                        val=row['raw']['value']
+                        table_data.append(["RAS",val])
+                        index=len(table_data)-1
+                        if(val>0):
+                            my_row_colors.append([index,"black","red"])
+                        else:
+                            my_row_colors.append([index,"black","green"])
+                    case 197:
+                        val=row['raw']['value']
+                        table_data.append(["Pending",val])
+                        index=len(table_data)-1
+                        if(val>0):
+                            my_row_colors.append([index,"black","red"])
+                        else:
+                            my_row_colors.append([index,"black","green"])
+                    case 191:
+                        val=row['raw']['value']
+                        table_data.append(["GSENSE",val])
+                        index=len(table_data)-1
+                        if(val>0):
+                            my_row_colors.append([index,"black","red"])
+                        else:
+                            my_row_colors.append([index,"black","green"])
+                    case 241:
+                        val=row['raw']['value']
+                        table_data.append(["Data Written",humanize.naturalsize(val*512)])
+                    case 242:
+                        val=row['raw']['value']
+                        table_data.append(["Data Read",humanize.naturalsize(val*512)])
+                    case 194:
+                        val=row['flags']['value']
+                        table_data.append(["Temperature",f'{val}°C'])
+                    case 12:
+                        val=row['flags']['value']
+                        table_data.append(["Power Cycles",f'{val}'])
+        return table_data,my_row_colors
+    except KeyError as e:
+        print(f'KeyError in make_data_table() for {drive}: {e}')
+        return [],[]
 
 #make table for main tab to display list of all drives and their status
 def main_tab_table():
@@ -343,9 +382,9 @@ def main_tab():
 #create new tab for a drive  
 def new_tab(serial):
     data=smart_data_dict[serial]=json.loads(get_smart(all_drives[serial].path))
-    device_model=data.get("model_name")
-    device_protocol=data.get("device", {}).get("protocol")
-    drive_bytes=data.get("user_capacity",{}).get("bytes")
+    device_model=data['model_name']
+    device_protocol=data['device']['protocol']
+    drive_bytes=data['user_capacity']['bytes']
     drive_capacity=humanize.naturalsize(int( 0 if drive_bytes is None else drive_bytes))
     erased="✔" if all_drives[serial].erased else "❌"
     short_tested="✔" if all_drives[serial].short_tested else "❌"
@@ -370,7 +409,7 @@ def new_tab(serial):
             key=f'{serial}'
         )
     else:
-        rpm=data.get("rotation_rate")
+        rpm=data['rotation_rate']
         return sg.Tab(
             f'{serial}',
             [
@@ -525,40 +564,40 @@ while not QUIT:
         refresh_thread.join()
         break
     elif event == "-Erase-":
-        drive=values.get("Tabgroup")
+        drive=values['Tabgroup']
         if(drive != None):
-            protocol=smart_data_dict[drive].get('device',{}).get('protocol')
+            protocol=smart_data_dict[drive]['device']['protocol']
             subproc_list.append([drive,erase_drive(str(all_drives[drive].path),protocol)])
             refresh(drive)
     elif event == "-Long-":
-        drive=values.get("Tabgroup")
+        drive=values['Tabgroup']
         if(drive != None):
-            t=long_test(drive,str(all_drives[drive].path),60*int(smart_data_dict[drive].get('ata_smart_data',{}).get('polling_minutes',{}).get('extended') or 0))
+            t=long_test(drive,str(all_drives[drive].path),60*int(smart_data_dict[drive]['ata_smart_data']['self_test']['polling_minutes']['extended'] or 0))
             timer_list_extended.append((drive,t))
             window.write_event_value('-RefreshPage-',1)
     elif event == "-Short-":
-        drive=values.get("Tabgroup")
+        drive=values['Tabgroup']
         if(drive != None):
-            t=short_test(drive,str(all_drives[drive].path),60*int(smart_data_dict[drive].get('ata_smart_data',{}).get('self_test',{}).get('polling_minutes',{}).get('short') or 0))
+            t=short_test(drive,str(all_drives[drive].path),60*int(smart_data_dict[drive]['ata_smart_data']['self_test']['polling_minutes']['short'] or 0))
             timer_list_short.append([drive, t])
             window.write_event_value('-RefreshPage-',1)
     elif event == "-SMART-":
-        drive=values.get("Tabgroup")
+        drive=values['Tabgroup']
         if(drive != None):
             popup_smart_data(str(all_drives[drive].path))
     elif event == "-Refresh-":
         rescan()
-        drive=values.get("Tabgroup")
+        drive=values['Tabgroup']
         refresh(drive)
     elif event == "-RefreshPage-":
-        drive=values.get("Tabgroup")
+        drive=values['Tabgroup']
         refresh(drive)
     elif event == "-HEX-":
-        drive=values.get("Tabgroup")
+        drive=values['Tabgroup']
         if(drive != None):
             hexdump(str(all_drives[drive].path))
     elif event == "Tabgroup":
-        drive=values.get("Tabgroup")
+        drive=values['Tabgroup']
         if(drive != None):
             refresh(drive)
 
