@@ -297,6 +297,12 @@ def make_table_data(drive,data):
                 my_row_colors.append([0,"black","green"])
             else:
                 my_row_colors.append([0,"black","red"])
+            if(power_on_hours<10000):
+                my_row_colors.append([2,"black","green"])
+            elif(power_on_hours<20000):
+                my_row_colors.append([2,"black","yellow"])
+            else:
+                my_row_colors.append([2,"black","red"])
             
             for row in data['ata_smart_attributes']['table']:
                 match(row['id']):
