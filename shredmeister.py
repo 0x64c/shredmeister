@@ -28,6 +28,7 @@ import humanize
 import time
 import threading
 import argparse
+import re
 
 smart_data_dict= dict()
 all_drives=dict()
@@ -44,7 +45,7 @@ def get_serials_from_drive_paths(drive_paths):
         #faster method but doesn't work with all drive types
         try:
             block=i.split('/')[-1]
-            serial=subprocess.check_output(['cat',f'/sys/block/{block}/device/serial']).rstrip().decode("utf-8")
+            serial=subprocess.check_output((['ssh',f'{login}'] if login else [])+['cat',f'/sys/block/{block}/device/serial']).rstrip().decode("utf-8")
         except subprocess.CalledProcessError as e:
             print(f'Unable to get serial for device {i} from virtual filesystem. Proceeding with smartctl method.')
         else:
@@ -60,18 +61,17 @@ def get_serials_from_drive_paths(drive_paths):
         except TypeError as e:
             print(f'Unable to get serial for device {i} from smartctl. Not populating.')
         else:
-            #print(f'Found serial {serial} for drive {i} through smartctl.')
+            print(f'Found serial {serial} for drive {i} through smartctl.')
             drives[serial]=i
     return drives
 
 #returns list of mounted drives as a dict "{serial}"->"{path}"
 def get_mounted_drives():
     try:
-        mount=subprocess.Popen(['mount'],stdout=subprocess.PIPE)
-        grep=subprocess.Popen(['grep','--only-matching','-e',r'^/dev/nvme[0-9]n[0-9]\|^/dev/sd[a-z]'],stdin=mount.stdout,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-        mount.stdout.close()
-        output,err=grep.communicate()
-        drive_paths=output.decode("utf-8").splitlines()
+        mount=subprocess.Popen((['ssh',f'{login}'] if login else [])+['mount'],stdout=subprocess.PIPE)
+        drives=re.findall(r'/dev/sd[a-z]|/dev/nvme[0-9]n[0-9]',mount.stdout.read().decode('utf-8'))
+        drive_paths=list(set(drives))
+
     except subprocess.CalledProcessError as e:
         print('Subprocess for get_mounted_drives() failed:')
         print(e)
@@ -81,20 +81,20 @@ def get_mounted_drives():
 #returns list of connected drives as a dict "{serial}"->"{path}"
 def get_drives():
     try:
-        drive_paths=''
-        output=subprocess.check_output(['find','/dev','-type','b','-regex',r'/dev/sd[a-x]+\|/dev/nvme[0-9]n[0-9]']).decode('utf-8').splitlines()
+        output=subprocess.Popen((['ssh',f'{login}'] if login else [])+['find','/dev','-type','b','-regex',(r'"/dev/sd[a-x]+\|/dev/nvme[0-9]n[0-9]"' if login else r'\'/dev/sd[a-x]+\|/dev/nvme[0-9]n[0-9]\'')],stdout=subprocess.PIPE)
+        drive_paths=output.stdout.read().decode('utf-8').splitlines()
+        print(drive_paths)
     except subprocess.CalledProcessError as e:
         print('Subprocess for get_drives() failed:')
         print(e)
     else:
-        drive_paths=output
-    return get_serials_from_drive_paths(drive_paths)
+        return get_serials_from_drive_paths(drive_paths)
 
 
 #retrieve smart data as JSON
 def get_smart(drive_path):
     try:
-        output=subprocess.run(['smartctl','-aj',drive_path],stdout=subprocess.PIPE)
+        output=subprocess.run((['ssh',f'{login}'] if login else [])+['smartctl','-aj',drive_path],stdout=subprocess.PIPE)
         data=output.stdout
         #check if bit 1 or 2 of the return code is set (command line did not parse or drive not found)
         if output.returncode & 3 :
@@ -109,7 +109,7 @@ def get_smart(drive_path):
 #display popup with smartctl printout
 def popup_smart_data(drive_path):
     try:
-        output=subprocess.run(['smartctl','-a',drive_path],stdout=subprocess.PIPE)
+        output=subprocess.run((['ssh',f'{login}'] if login else [])+['smartctl','-a',drive_path],stdout=subprocess.PIPE)
     except:
         pass
     else:
@@ -120,16 +120,16 @@ def popup_smart_data(drive_path):
 def erase_drive(drive_path,device_type):
     if drive_path != None:
         if device_type == 'NVMe':
-            return subprocess.Popen(['blkdiscard','-q','-s','-f',drive_path])
+            return subprocess.Popen((['ssh',f'{login}'] if login else [])+['blkdiscard','-q','-s','-f',drive_path])
             #return subprocess.Popen(['sleep','5'])
         else:
-            return subprocess.Popen(['shred','-n','0','-z',drive_path])
+            return subprocess.Popen((['ssh',f'{login}'] if login else [])+['shred','-n','0','-z',drive_path])
             #return subprocess.Popen(['sleep','5'])
 
 #display popup with hexdump printout of first few LBA of drive
 def hexdump(drive_path):
     try:
-        output=subprocess.run(['hexdump','-C','-n17408',drive_path],stdout=subprocess.PIPE)
+        output=subprocess.run((['ssh',f'{login}'] if login else [])+['hexdump','-C','-n17408',drive_path],stdout=subprocess.PIPE)
     except:
         pass
     else:
@@ -153,13 +153,13 @@ def mark_long_tested(serial):
 #after timer expires, callback functions are run to mark drives as tested
 def short_test(serial,drive_path,eta):
     if drive_path != None:
-        proc_status=subprocess.Popen(["smartctl","-q","silent","-t","short",drive_path])
+        proc_status=subprocess.Popen((['ssh',f'{login}'] if login else [])+["smartctl","-q","silent","-t","short",drive_path])
         t = threading.Timer(eta,mark_short_tested,args=(serial,))
         t.start()
         return t
 def long_test(serial,drive_path,eta):
     if drive_path != None:
-        proc_status=subprocess.Popen(["smartctl","-q","silent","-t","long",drive_path])
+        proc_status=subprocess.Popen((['ssh',f'{login}'] if login else [])+["smartctl","-q","silent","-t","long",drive_path])
         t = threading.Timer(eta,mark_long_tested,args=(serial,))
         t.start()
         return t
@@ -225,7 +225,10 @@ def refresh(serial,use_stale_data=False):
             window[f'-Short-'].update(disabled=True)
             window[f'-Long-'].update(disabled=True)
         else:
-            rpm=data['rotation_rate']
+            try:
+                rpm=data['rotation_rate']
+            except KeyError as e:
+                rpm='?'
             window[f'{serial} model'].update(value=f'{device_model} {device_protocol} {drive_capacity} {rpm} RPM')
             window[f'-Short-'].update(disabled=False)
             window[f'-Long-'].update(disabled=False)
@@ -415,7 +418,10 @@ def new_tab(serial):
             key=f'{serial}'
         )
     else:
-        rpm=data['rotation_rate']
+        try:
+            rpm=data['rotation_rate']
+        except KeyError as e:
+            rpm='?'
         return sg.Tab(
             f'{serial}',
             [
@@ -438,8 +444,8 @@ def new_tab(serial):
 #detects connected storage drives, makes an object for each, adds them to dictionary
 def scan():
     global all_drives
-    mounted_drives=get_mounted_drives()
     drives=get_drives()
+    mounted_drives=get_mounted_drives()
     if(len(drives)>0):
         for serial,path in drives.items():
             mounted=False
@@ -512,6 +518,49 @@ def rescan():
             window['Tabgroup'].add_tab(new_tab(serial))
     window.refresh()
 
+
+parser=argparse.ArgumentParser(
+    prog='ShredMeister',
+    description='Tests and erases storage drives.',
+    epilog='https://github.com/0x64c/shredmeister',
+    add_help=True
+)
+
+parser.add_argument('--login', action='append',nargs=1,metavar=('user@host'),type=str)
+args=parser.parse_args()
+##print(repr(args.login[0][0]))
+#print(repr(vars(args)))
+#parser.print_help()
+
+print(repr(vars(args)))
+
+logins=list()
+for key,value in vars(args).items():
+    match key:
+        case 'login':
+            try:
+                for users in value:
+                    logins.append(users[0])
+            except TypeError as e:
+                pass
+
+login=None
+#print(repr(logins))
+if logins:
+    for user in logins:
+        print(f'Forking to {user}')
+        pid=os.fork()
+        if pid > 0:
+            continue
+        else:
+            login=user
+            break
+
+#for arg in vars(args):
+#    print(getattr(args,arg))
+
+#output=subprocess.run(['ssh','daniel@10.0.0.188','lsblk'])
+
 scan()
 
 tabgroup = sg.TabGroup(
@@ -541,7 +590,7 @@ layout = [
     )],
 ]
 
-window = sg.Window('Shredmeister', layout, finalize=True)
+window = sg.Window('Shredmeister'+(f' {login}' if login else ' local'), layout, finalize=True)
 
 time_last_polled=0
 window.write_event_value('-RefreshPage-',1)
